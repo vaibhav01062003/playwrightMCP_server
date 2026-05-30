@@ -5,9 +5,11 @@ tests/test_auth.py — Tests for core/auth_guard.py
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from core.config import settings
 from core.auth_guard import AuthGuard, _fill_login_form
 
 
@@ -22,6 +24,18 @@ def _mock_browser(alive: bool = True, cookies: list = None) -> MagicMock:
     return bm
 
 
+@contextmanager
+def _settings_override(**overrides):
+    originals = {name: getattr(settings, name) for name in overrides}
+    try:
+        for name, value in overrides.items():
+            object.__setattr__(settings, name, value)
+        yield
+    finally:
+        for name, value in originals.items():
+            object.__setattr__(settings, name, value)
+
+
 # ── Session validation ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -34,12 +48,11 @@ async def test_ensure_login_skips_when_valid():
         cookies=[{"name": "session_token", "value": "abc"}],
     )
 
-    with patch("core.config.settings.login_url", "https://example.com/login"):
-        with patch("core.config.settings.session_ttl", 3600):
-            # Should not perform login
-            with patch.object(guard, "_perform_login", new_callable=AsyncMock) as mock_login:
-                await guard.ensure_login(bm)
-                mock_login.assert_not_awaited()
+    with _settings_override(login_url="https://example.com/login", session_ttl=3600):
+        # Should not perform login
+        with patch.object(guard, "_perform_login", new_callable=AsyncMock) as mock_login:
+            await guard.ensure_login(bm)
+            mock_login.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -74,11 +87,10 @@ async def test_ensure_login_triggers_when_no_auth_cookies():
         cookies=[{"name": "analytics_id", "value": "xyz"}],  # No auth cookie
     )
 
-    with patch("core.config.settings.login_url", "https://example.com/login"):
-        with patch("core.config.settings.session_ttl", 3600):
-            with patch.object(guard, "_perform_login", new_callable=AsyncMock) as mock_login:
-                await guard.ensure_login(bm)
-                mock_login.assert_awaited_once()
+    with _settings_override(login_url="https://example.com/login", session_ttl=3600):
+        with patch.object(guard, "_perform_login", new_callable=AsyncMock) as mock_login:
+            await guard.ensure_login(bm)
+            mock_login.assert_awaited_once()
 
 
 # ── Invalidation ──────────────────────────────────────────────────────────────

@@ -1,17 +1,10 @@
 """
-app.py — Entry point for the Playwright MCP Wrapper Server.
+app.py - Entry point for the Playwright MCP Wrapper Server.
 
 Modes
 -----
-1. stdio  (default) — reads JSON-RPC from stdin, writes to stdout.
-          Compatible with Azure Foundry MCP config (command/args style).
-2. http   — serves JSON-RPC over HTTP POST /mcp (set SERVER_MODE=http).
-          Suitable for Azure Container Apps with HTTP triggers.
-
-Run
----
-    python app.py            # stdio mode
-    SERVER_MODE=http python app.py   # HTTP mode
+1. stdio  (default) - reads JSON-RPC from stdin, writes responses to stdout.
+2. http   - serves JSON-RPC over HTTP POST /mcp (set SERVER_MODE=http).
 """
 
 from __future__ import annotations
@@ -28,50 +21,53 @@ from mcp.playwright_wrapper import playwright_wrapper
 from mcp.tool_router import tool_router
 
 
-# ── STDIO mode ─────────────────────────────────────────────────────────────────
+async def _read_stdin_line(loop: asyncio.AbstractEventLoop) -> bytes:
+    return await loop.run_in_executor(None, sys.stdin.buffer.readline)
+
+
+async def _write_stdout(loop: asyncio.AbstractEventLoop, data: bytes) -> None:
+    await loop.run_in_executor(None, sys.stdout.buffer.write, data)
+    await loop.run_in_executor(None, sys.stdout.buffer.flush)
+
 
 async def run_stdio() -> None:
     """
     Run the MCP server in stdio mode.
-    Reads newline-delimited JSON-RPC messages from stdin.
-    Writes newline-delimited JSON-RPC responses to stdout.
+
+    Avoid asyncio's pipe transports here. On Windows, especially from an
+    interactive PowerShell console, Proactor pipe transports can fail with
+    WinError 6 against console handles. Executor-backed blocking IO works for
+    both interactive smoke tests and real MCP stdio pipes.
     """
     logger.info("server_mode_stdio")
-    loop = asyncio.get_event_loop()
-
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
-
-    writer_transport, writer_protocol = await loop.connect_write_pipe(
-        asyncio.BaseProtocol, sys.stdout.buffer
-    )
-
-    async def write(data: bytes) -> None:
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+    loop = asyncio.get_running_loop()
 
     try:
-        async for line in reader:
+        while True:
+            line = await _read_stdin_line(loop)
+            if not line:
+                logger.info("server_stdin_eof")
+                break
+
             line = line.strip()
             if not line:
                 continue
+
             response = await tool_router.handle(line)
-            await write(response)
+            await _write_stdout(loop, response)
     except asyncio.CancelledError:
-        pass
+        raise
     except EOFError:
         logger.info("server_stdin_eof")
 
 
-# ── HTTP mode ──────────────────────────────────────────────────────────────────
-
 async def run_http() -> None:
     """
-    Run the MCP server as a minimal HTTP server (aiohttp).
-    POST /mcp        → MCP JSON-RPC endpoint
-    GET  /health     → Liveness probe
-    GET  /ready      → Readiness probe
+    Run the MCP server as a minimal HTTP server.
+
+    POST /mcp    - MCP JSON-RPC endpoint
+    GET /health  - liveness probe
+    GET /ready   - readiness probe
     """
     try:
         from aiohttp import web
@@ -104,17 +100,13 @@ async def run_http() -> None:
         host=settings.server_host,
         port=settings.server_port,
     )
-    # Keep running
     await asyncio.Event().wait()
 
-
-# ── Startup / shutdown ─────────────────────────────────────────────────────────
 
 async def main() -> None:
     mode = os.getenv("SERVER_MODE", "stdio").lower()
 
-    # Graceful shutdown hook
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:
@@ -125,26 +117,29 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, _signal_handler)
         except NotImplementedError:
-            pass  # Windows
+            signal.signal(sig, lambda *_: _signal_handler())
 
     logger.info("server_starting", mode=mode, version="1.0.0")
 
-    # Start the wrapper (launches Playwright MCP subprocess + browser)
     await playwright_wrapper.start()
 
-    try:
-        server_task = asyncio.create_task(
-            run_stdio() if mode == "stdio" else run_http()
-        )
-        shutdown_task = asyncio.create_task(shutdown_event.wait())
+    server_task = asyncio.create_task(run_stdio() if mode == "stdio" else run_http())
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
 
+    try:
         done, pending = await asyncio.wait(
             [server_task, shutdown_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
+
         for task in pending:
             task.cancel()
 
+        for task in done:
+            await task
+    except asyncio.CancelledError:
+        logger.info("server_cancelled")
+        raise
     finally:
         logger.info("server_stopping")
         await playwright_wrapper.stop()
@@ -153,4 +148,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

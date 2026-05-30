@@ -2,7 +2,7 @@
 asyncio-throttle==1.0.2
 
 # ── Playwright ────────────────────────────────────────────────────────────────
-playwright==1.47.0
+playwright==1.60.0
 
 # ── HTTP server (optional, for SERVER_MODE=http) ──────────────────────────────
 aiohttp==3.10.5

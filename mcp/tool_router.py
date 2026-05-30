@@ -17,6 +17,7 @@ from core.logger import logger
 from mcp.playwright_wrapper import playwright_wrapper
 
 _JSONRPC = "2.0"
+_MCP_PROTOCOL_VERSION = "2025-06-18"
 
 
 def _ok(result: Any, msg_id: Any) -> dict:
@@ -79,7 +80,7 @@ class ToolRouter:
         if method == "initialize":
             return _ok(
                 {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": _MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": "playwright-python-wrapper", "version": "1.0.0"},
                 },

@@ -18,7 +18,7 @@ def _configure_stdlib_logging() -> None:
     """Wire stdlib logging into structlog so third-party libs are captured too."""
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=sys.stderr,
         level=getattr(logging, settings.log_level, logging.INFO),
     )
 
@@ -48,7 +48,7 @@ def build_logger() -> structlog.BoundLogger:
             getattr(logging, settings.log_level, logging.INFO)
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

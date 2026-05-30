@@ -34,7 +34,7 @@ async def test_router_initialize(router):
     response = json.loads(raw)
     assert response["id"] == 1
     assert "result" in response
-    assert response["result"]["protocolVersion"] == "2024-11-05"
+    assert response["result"]["protocolVersion"] == "2025-06-18"
 
 
 @pytest.mark.asyncio

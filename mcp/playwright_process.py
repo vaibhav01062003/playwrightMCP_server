@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from core.config import settings
@@ -22,6 +25,67 @@ from core.logger import logger
 
 
 _JSONRPC_VERSION = "2.0"
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _resolve_command(command: str) -> str:
+    resolved = shutil.which(command)
+    if resolved:
+        return resolved
+
+    if sys.platform == "win32" and not command.lower().endswith((".cmd", ".exe", ".bat")):
+        for extension in (".cmd", ".exe", ".bat"):
+            resolved = shutil.which(command + extension)
+            if resolved:
+                return resolved
+
+    raise FileNotFoundError(
+        f"Could not find Playwright MCP command '{command}' on PATH. "
+        "Install Node.js or set PLAYWRIGHT_MCP_COMMAND to the full path of npx.cmd."
+    )
+
+
+def _find_cached_playwright_mcp_cli() -> Optional[Path]:
+    cache_root = Path(os.getenv("LOCALAPPDATA", "")) / "npm-cache" / "_npx"
+    if not cache_root.exists():
+        return None
+
+    candidates = [
+        package_json.parent / "cli.js"
+        for package_json in cache_root.glob("*/node_modules/@playwright/mcp/package.json")
+        if (package_json.parent / "cli.js").exists()
+    ]
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _resolve_windows_npx_command(args: list[str]) -> Optional[list[str]]:
+    if sys.platform != "win32" or not args or not args[0].startswith("@playwright/mcp"):
+        return None
+
+    cli_path = _find_cached_playwright_mcp_cli()
+    if cli_path is None:
+        npx = _resolve_command(settings.playwright_mcp_command)
+        subprocess.run(
+            [npx, args[0], "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+        cli_path = _find_cached_playwright_mcp_cli()
+
+    node = _resolve_command("node")
+    if cli_path is None:
+        raise FileNotFoundError(
+            "Could not find @playwright/mcp in the npm npx cache. "
+            "Run `npx @playwright/mcp@latest --version`, then retry."
+        )
+
+    return [node, str(cli_path), *args[1:]]
 
 
 def _rpc(method: str, params: Any, msg_id: int) -> bytes:
@@ -52,7 +116,12 @@ class PlaywrightMCPProcess:
 
     async def start(self) -> None:
         """Launch the Playwright MCP subprocess."""
-        cmd = [settings.playwright_mcp_command] + settings.playwright_mcp_args
+        cmd = None
+        if settings.playwright_mcp_command.lower() in {"npx", "npx.cmd"}:
+            cmd = _resolve_windows_npx_command(settings.playwright_mcp_args)
+        if cmd is None:
+            command = _resolve_command(settings.playwright_mcp_command)
+            cmd = [command] + settings.playwright_mcp_args
         if settings.playwright_headless:
             cmd += ["--headless"]
 
@@ -132,7 +201,7 @@ class PlaywrightMCPProcess:
         await self._rpc_call(
             "initialize",
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": _MCP_PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
                 "clientInfo": {"name": "playwright-python-wrapper", "version": "1.0.0"},
             },
@@ -159,8 +228,10 @@ class PlaywrightMCPProcess:
             raise RuntimeError(f"MCP error [{method}]: {response['error']}")
         return response.get("result", {})
 
-    async def _send(self, payload: str | bytes) -> None:
+    async def _send(self, payload: dict[str, Any] | str | bytes) -> None:
         assert self._proc and self._proc.stdin
+        if isinstance(payload, dict):
+            payload = json.dumps(payload)
         if isinstance(payload, str):
             payload = payload.encode()
         self._proc.stdin.write(payload if payload.endswith(b"\n") else payload + b"\n")

@@ -71,8 +71,14 @@ def _build_trace_provider() -> TracerProvider:
 
 
 def _build_meter_provider() -> MeterProvider:
-    reader = PeriodicExportingMetricReader(ConsoleMetricExporter(), export_interval_millis=60_000)
-    return MeterProvider(resource=_RESOURCE, metric_readers=[reader])
+    if settings.debug:
+        reader = PeriodicExportingMetricReader(
+            ConsoleMetricExporter(),
+            export_interval_millis=60_000,
+        )
+        return MeterProvider(resource=_RESOURCE, metric_readers=[reader])
+
+    return MeterProvider(resource=_RESOURCE)
 
 
 # ── Global setup ──────────────────────────────────────────────────────────────
